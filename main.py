@@ -3,22 +3,30 @@ import logging
 from collections import deque
 from datetime import datetime, timedelta
 import keyboard
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QGuiApplication
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget,
                              QVBoxLayout, QGraphicsDropShadowEffect)
 
 
 class TypingSpeedMonitor(QMainWindow):
+    key_pressed_signal = pyqtSignal(object)
+    key_released_signal = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         self.keystrokes = deque(maxlen=1000)
-        self.pressed_keys = set()  # Track currently pressed keys
-        self.wpm_window = 5  # Seconds to calculate WPM over
+        self.pressed_keys = set()
+        self.wpm_window = 5
         self.init_ui()
         self.setup_keyboard_listener()
 
+        # Connect signals to thread-safe handlers
+        self.key_pressed_signal.connect(self.handle_key_press_main)
+        self.key_released_signal.connect(self.handle_key_release_main)
+
     def init_ui(self):
+        # Same UI setup as before
         self.setWindowTitle("Typeometer")
         self.setWindowFlags(
             Qt.WindowStaysOnTopHint |
@@ -49,13 +57,14 @@ class TypingSpeedMonitor(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_wpm)
-        self.timer.start(200)  # Update every 0.2 seconds
+        self.timer.start(200)
 
     def setup_keyboard_listener(self):
-        keyboard.on_press(self.handle_key_press)
-        keyboard.on_release(self.handle_key_release)
+        # Emit signals from keyboard callbacks
+        keyboard.on_press(lambda e: self.key_pressed_signal.emit(e))
+        keyboard.on_release(lambda e: self.key_released_signal.emit(e))
 
-    def handle_key_press(self, event):
+    def handle_key_press_main(self, event):
         modifiers = {
             'shift', 'ctrl', 'alt', 'right shift', 'alt gr',
             'caps lock', 'tab', 'enter', 'esc', 'backspace',
@@ -66,8 +75,15 @@ class TypingSpeedMonitor(QMainWindow):
         if event.name in modifiers:
             return
 
+        valid_special_keys = {
+            'space', 'comma', 'period', 'slash', 'backslash',
+            'semicolon', 'apostrophe', 'minus', 'equal', 'grave',
+            'bracketleft', 'bracketright', '1', '2', '3', '4', '5',
+            '6', '7', '8', '9', '0'
+        }
+
         valid_key = (
-            event.name == 'space' or
+            event.name in valid_special_keys or
             (len(event.name) == 1 and event.name.isprintable())
         )
 
@@ -75,7 +91,7 @@ class TypingSpeedMonitor(QMainWindow):
             self.pressed_keys.add(event.name)
             self.keystrokes.append(datetime.now())
 
-    def handle_key_release(self, event):
+    def handle_key_release_main(self, event):
         if event.name in self.pressed_keys:
             self.pressed_keys.remove(event.name)
 
@@ -83,13 +99,20 @@ class TypingSpeedMonitor(QMainWindow):
         now = datetime.now()
         cutoff = now - timedelta(seconds=self.wpm_window)
 
+        # Remove old keystrokes
         while self.keystrokes and self.keystrokes[0] < cutoff:
             self.keystrokes.popleft()
 
         if not self.keystrokes:
             return 0
 
-        return int((len(self.keystrokes) / 5) * (60 / self.wpm_window))
+        # Calculate WPM using rolling window
+        elapsed_time = (now - self.keystrokes[0]).total_seconds()
+        if elapsed_time == 0:
+            return 0  # Prevent division by zero
+
+        wpm = (len(self.keystrokes) / 5) * (60 / elapsed_time)
+        return int(min(wpm, 500))  # Cap WPM for extreme cases
 
     def update_wpm(self):
         self.wpm_label.setText(f"WPM: {self.calculate_wpm()}")
