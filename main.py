@@ -2,11 +2,29 @@ import sys
 import logging
 from collections import deque
 from datetime import datetime, timedelta
-import keyboard
+import threading
+from evdev import InputDevice, categorize, ecodes, list_devices
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QGuiApplication
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget,
                              QVBoxLayout, QGraphicsDropShadowEffect)
+
+import settings_setup
+from json import load as json_load
+
+settings_setup.setup_config()
+global settings
+with open(file="config/general.json", mode="r") as jfile:
+    settings = json_load(jfile)
+
+
+def get_color_from_wpm(wpm: int) -> str:
+    if wpm < 120:
+        return "white"
+    elif 120 < wpm < 300:
+        return "orange"
+    else:
+        return "red"
 
 
 class TypingSpeedMonitor(QMainWindow):
@@ -21,12 +39,10 @@ class TypingSpeedMonitor(QMainWindow):
         self.init_ui()
         self.setup_keyboard_listener()
 
-        # Connect signals to thread-safe handlers
         self.key_pressed_signal.connect(self.handle_key_press_main)
         self.key_released_signal.connect(self.handle_key_release_main)
 
     def init_ui(self):
-        # Same UI setup as before
         self.setWindowTitle("Typeometer")
         self.setWindowFlags(
             Qt.WindowStaysOnTopHint |
@@ -43,7 +59,9 @@ class TypingSpeedMonitor(QMainWindow):
 
         self.wpm_label = QLabel("WPM: 0")
         self.wpm_label.setFont(QFont("Arial", 30))
-        self.wpm_label.setStyleSheet("color: white; margin: 0; padding: 0;")
+        self.wpm_label.setStyleSheet("color: white; margin: 0; padding: 0;")  # Base style
+        # self.wpm_label.setFont(QFont("Arial", 30))
+        # self.wpm_label.setStyleSheet("color: white; margin: 0; padding: 0;")
         self.wpm_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
 
         shadow = QGraphicsDropShadowEffect()
@@ -60,19 +78,82 @@ class TypingSpeedMonitor(QMainWindow):
         self.timer.start(200)
 
     def setup_keyboard_listener(self):
-        # Emit signals from keyboard callbacks
-        keyboard.on_press(lambda e: self.key_pressed_signal.emit(e))
-        keyboard.on_release(lambda e: self.key_released_signal.emit(e))
+        devices = [InputDevice(path) for path in list_devices()]
+        if settings["general"]["input_device_path"] != "":
+            logging.info("keyboard device defined!")
+            self.keyboard_dev = InputDevice("/dev/input/event3")
+        else:
+            # First try to find a device that looks like a keyboard
+            for dev in devices:
+                caps = dev.capabilities()
+                # Check for keyboard keys and absence of mouse capabilities
+                if ecodes.EV_KEY in caps:
+                    # Exclude devices with relative axes (mice/trackpads)
+                    if ecodes.EV_REL not in caps:
+                        # Additional check for common keyboard identifiers
+                        if any(k in dev.name.lower() for k in ['keyboard', 'kbd', 'keeb']):
+                            self.keyboard_dev = dev
+                            break
 
-    def handle_key_press_main(self, event):
+        # Fallback to first device with keys if no obvious keyboard found
+        if not self.keyboard_dev:
+            for dev in devices:
+                if ecodes.EV_KEY in dev.capabilities():
+                    self.keyboard_dev = dev
+                    break
+
+        if not self.keyboard_dev:
+            logging.error("No keyboard device found!")
+            return
+
+        logging.info(f"Using keyboard device: {self.keyboard_dev.name}")
+
+        # Rest of the method remains the same...
+        self.keyboard_listener_thread = threading.Thread(
+            target=self.read_keyboard_events, daemon=True)
+        self.keyboard_listener_thread.start()
+
+    def read_keyboard_events(self):
+        try:
+            for event in self.keyboard_dev.read_loop():
+                if event.type == ecodes.EV_KEY:
+                    key_event = categorize(event)
+                    if key_event.keystate == key_event.key_down:
+                        self.key_pressed_signal.emit(key_event)
+                    elif key_event.keystate == key_event.key_up:
+                        self.key_released_signal.emit(key_event)
+        except Exception as e:
+            logging.error(f"Error reading keyboard events: {e}")
+
+    def normalize_key_name(self, key_name):
+        if key_name.startswith('KEY_'):
+            key_name = key_name[4:]
+        key_name = key_name.lower()
+        modifier_mapping = {
+            'leftshift': 'shift',
+            'rightshift': 'shift',
+            'leftctrl': 'ctrl',
+            'rightctrl': 'ctrl',
+            'leftalt': 'alt',
+            'rightalt': 'alt',
+            'altgr': 'alt gr',
+            'capslock': 'caps lock',
+            'pageup': 'page up',
+            'pagedown': 'page down',
+        }
+        return modifier_mapping.get(key_name, key_name)
+
+    def handle_key_press_main(self, key_event):
+        key_name = self.normalize_key_name(key_event.keycode)
+
         modifiers = {
-            'shift', 'ctrl', 'alt', 'right shift', 'alt gr',
-            'caps lock', 'tab', 'enter', 'esc', 'backspace',
-            'delete', 'left', 'right', 'up', 'down', 'home',
-            'end', 'page up', 'page down'
+            'shift', 'ctrl', 'alt', 'alt gr', 'caps lock',
+            'tab', 'enter', 'esc', 'backspace', 'delete',
+            'left', 'right', 'up', 'down', 'home', 'end',
+            'page up', 'page down'
         }
 
-        if event.name in modifiers:
+        if key_name in modifiers:
             return
 
         valid_special_keys = {
@@ -83,39 +164,41 @@ class TypingSpeedMonitor(QMainWindow):
         }
 
         valid_key = (
-            event.name in valid_special_keys or
-            (len(event.name) == 1 and event.name.isprintable())
+                key_name in valid_special_keys or
+                (len(key_name) == 1 and key_name.isprintable())
         )
 
-        if valid_key and event.name not in self.pressed_keys:
-            self.pressed_keys.add(event.name)
+        if valid_key and key_name not in self.pressed_keys:
+            self.pressed_keys.add(key_name)
             self.keystrokes.append(datetime.now())
 
-    def handle_key_release_main(self, event):
-        if event.name in self.pressed_keys:
-            self.pressed_keys.remove(event.name)
+    def handle_key_release_main(self, key_event):
+        key_name = self.normalize_key_name(key_event.keycode)
+        if key_name in self.pressed_keys:
+            self.pressed_keys.remove(key_name)
 
     def calculate_wpm(self):
         now = datetime.now()
         cutoff = now - timedelta(seconds=self.wpm_window)
 
-        # Remove old keystrokes
         while self.keystrokes and self.keystrokes[0] < cutoff:
             self.keystrokes.popleft()
 
         if not self.keystrokes:
             return 0
 
-        # Calculate WPM using rolling window
         elapsed_time = (now - self.keystrokes[0]).total_seconds()
         if elapsed_time == 0:
-            return 0  # Prevent division by zero
+            return 0
 
         wpm = (len(self.keystrokes) / 5) * (60 / elapsed_time)
-        return int(min(wpm, 500))  # Cap WPM for extreme cases
+        return int(min(wpm, 500))
 
     def update_wpm(self):
-        self.wpm_label.setText(f"WPM: {self.calculate_wpm()}")
+        wpm = self.calculate_wpm()
+        color = get_color_from_wpm(wpm=wpm)
+        self.wpm_label.setText(f"WPM: {wpm}")
+        self.wpm_label.setStyleSheet(f"color: {color}; margin: 0; padding: 0;")
 
     def position_window(self):
         screen = QGuiApplication.primaryScreen().availableGeometry()
@@ -142,25 +225,25 @@ class TypingSpeedMonitor(QMainWindow):
         self.position_window()
 
     def closeEvent(self, event):
-        keyboard.unhook_all()
         super().closeEvent(event)
 
 
 if __name__ == "__main__":
+
     logging.basicConfig(level=logging.INFO)
     app = QApplication(sys.argv)
 
     window = TypingSpeedMonitor()
     window.show()
 
-    # Required Hyprland rules
     hypr_rules = """\n
 windowrulev2 = float,title:Typeometer
 windowrulev2 = move 0 100%-100,title:Typeometer
 windowrulev2 = size 400 100,title:Typeometer
 windowrulev2 = noborder,title:Typeometer
 windowrulev2 = noblur,title:Typeometer
-windowrulev2 = focus,title:Typeometer\n
+windowrulev2 = pin,title:Typeometer
+windowrulev2 = nofocus,title:Typeometer\n
     """
     logging.info(f"Add to config:\n{hypr_rules}")
 
@@ -168,5 +251,3 @@ windowrulev2 = focus,title:Typeometer\n
         sys.exit(app.exec_())
     except KeyboardInterrupt:
         logging.info("Exiting...")
-    finally:
-        keyboard.unhook_all()

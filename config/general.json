@@ -1,0 +1,6 @@
+{
+ "general": {
+  "color_switcher": true,
+  "input_device_path": "/dev/input/event3"
+ }
+}
