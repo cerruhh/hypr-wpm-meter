@@ -1,22 +1,32 @@
+import socket
+import os
 import sys
 import logging
+import time
+import socket
+import subprocess
+
 from collections import deque
 from datetime import datetime, timedelta
 import threading
 from evdev import InputDevice, categorize, ecodes, list_devices
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QProcess
 from PyQt5.QtGui import QColor, QFont, QGuiApplication
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QWidget,
                              QVBoxLayout, QGraphicsDropShadowEffect)
-
+from pathlib import Path
 import settings_setup
 from json import load as json_load
+import Classes.TrayIcon
 
 settings_setup.setup_config()
 global settings
 with open(file="config/general.json", mode="r") as jfile:
     settings = json_load(jfile)
 
+
+def get_hypr_command_from_list():
+    pass
 
 def get_color_from_wpm(wpm: int) -> str:
     if wpm < 120:
@@ -27,29 +37,110 @@ def get_color_from_wpm(wpm: int) -> str:
         return "red"
 
 
+class HyprlandIPC:
+    def __init__(self):
+        self.socket_path = self.find_hyprland_socket()
+        self.max_retries = 5
+        self.retry_count = 0
+
+    def find_hyprland_socket(self):
+        # Try different possible socket locations
+        locations = [
+            # Modern Hyprland location (0.30.0+)
+            Path(os.environ.get("XDG_RUNTIME_DIR", "/run/user/1000")) / "hypr",
+            # Legacy location
+            Path("/tmp") / "hypr",
+            # Fallback location
+            Path.home() / ".hypr"
+        ]
+
+        for base in locations:
+            if base.exists():
+                instances = list(base.glob("*"))
+                if instances:
+                    latest_instance = max(instances, key=lambda x: x.stat().st_mtime)
+                    socket_path = latest_instance / ".socket.sock"
+                    if socket_path.exists():
+                        return str(socket_path)
+
+        # Fallback to hyprctl if all else fails
+        try:
+            instances = subprocess.check_output(
+                ["hyprctl", "instances", "-j"],
+                text=True
+            )
+            instance_id = instances.strip().split("\n")[0].split(" ")[-1]
+            return f"/run/user/{os.getuid()}/hypr/{instance_id}/.socket.sock"
+        except Exception as e:
+            raise RuntimeError(f"Hyprland socket not found: {e}")
+
+    def send_command(self, command):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                sock.connect(self.socket_path)
+                sock.sendall(command.encode() + b'\x00')
+                return sock.recv(4096).decode().strip('\x00')
+        except Exception as e:
+            print(f"IPC Error: {e}")
+            return None
+
+    def position_window(self, window_title, pos_name: str) -> bool:
+        commands = [
+            f"dispatch focuswindow title:^{window_title}$",
+            f"dispatch togglefloating title:^{window_title}$",
+            f"dispatch movewindowpixel 0 100%-100,title:^{window_title}$",
+            f"dispatch resizeactive exact 400 100,title:^{window_title}$",
+            f"dispatch pin title:^{window_title}$",
+            f"keyword windowrulevatime 0.1 float,title:^{window_title}$",
+            f"keyword windowrulevatime 0.1 nofocus,title:^{window_title}$",
+            f"keyword windowrulevatime 0.1 noborder,title:^{window_title}$"
+        ]
+
+        for cmd in commands:
+            if not self.send_command(cmd):
+                return False
+        return True
+
+
 class TypingSpeedMonitor(QMainWindow):
     key_pressed_signal = pyqtSignal(object)
     key_released_signal = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
+        self.setWindowTitle("Typeometer")
+        self.ipc = HyprlandIPC()
+        self.init_ui()
         self.keystrokes = deque(maxlen=1000)
         self.pressed_keys = set()
         self.wpm_window = 5
-        self.init_ui()
         self.setup_keyboard_listener()
 
         self.key_pressed_signal.connect(self.handle_key_press_main)
         self.key_released_signal.connect(self.handle_key_release_main)
 
-    def init_ui(self):
-        self.setWindowTitle("Typeometer")
+        self.trayicon = Classes.TrayIcon.Tray(self)
+        threading.Thread(target=self.trayicon.trayicon.run).start()
+
         self.setWindowFlags(
             Qt.WindowStaysOnTopHint |
             Qt.FramelessWindowHint |
-            Qt.NoDropShadowWindowHint
+            Qt.NoDropShadowWindowHint |
+            Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
+        QTimer.singleShot(500, self.force_positioning)
+
+    def init_ui(self):
+        self.setWindowFlags(
+            Qt.WindowStaysOnTopHint |
+            Qt.FramelessWindowHint |
+            Qt.NoDropShadowWindowHint |
+            Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFixedSize(400, 100)
 
         container = QWidget()
@@ -202,39 +293,78 @@ class TypingSpeedMonitor(QMainWindow):
 
     def position_window(self):
         screen = QGuiApplication.primaryScreen().availableGeometry()
-        x = 0
-        y = screen.height() - self.height()
+        position = settings["general"].get("window_position", "bottom-left")
 
-        if QGuiApplication.platformName() == "wayland":
-            try:
-                import subprocess
-                subprocess.run([
-                    "hyprctl",
-                    "dispatch",
-                    "movewindowpixel",
-                    "0 100%-100",
-                    f"title:Typeometer"
-                ], check=True)
-            except Exception as e:
-                logging.error(f"Positioning failed: {e}")
-        else:
-            self.move(x, y)
+        window_width = self.width()
+        window_height = self.height()
+
+        # Calculate positions for all corners
+        positions = {
+            "bottom-left": (0, screen.height() - window_height),
+            "bottom-right": (screen.width() - window_width, screen.height() - window_height),
+            "top-left": (0, 0),
+            "top-right": (screen.width() - window_width, 0)
+        }
+
+        print(
+            f"bl: {positions["bottom-left"]} br: {positions['bottom-left']} tl: {positions['top-left']} tr: {positions['top-right']}")
+
+        x, y = positions.get(position, positions["bottom-left"])
+
+        # Force window position through multiple methods
+        self.move(x, y)
+        self.setGeometry(x, y, self.width(), self.height())
+
+        # Required for some Wayland compositors
+        self.show()
+        QTimer.singleShot(100, lambda: self.move(x, y))
+        QTimer.singleShot(200, lambda: self.setGeometry(x, y, self.width(), self.height()))
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.position_window()
+        self.retry_positioning()
+
+    def retry_positioning(self):
+        if self.ipc.position_window("Typeometer"):
+            print("Window positioned successfully")
+        elif self.ipc.retry_count < self.ipc.max_retries:
+            print(f"Retrying positioning ({self.ipc.retry_count + 1}/{self.ipc.max_retries})")
+            self.ipc.retry_count += 1
+            QTimer.singleShot(300, self.retry_positioning)
+        else:
+            print("Failed to position window after multiple attempts")
+
+    def force_positioning(self):
+        if not self.ipc.position_window("Typeometer"):
+            print("Positioning failed, trying alternative methods...")
+            self.fallback_positioning()
 
     def closeEvent(self, event):
+        if hasattr(self, 'pos_timer'):
+            self.pos_timer.stop()
         super().closeEvent(event)
+
+    def fallback_positioning(self):
+        """Fallback using XWayland properties"""
+        self.move(0, self.screen().size().height() - self.height())
+        self.setFixedSize(400, 100)
+        # Keep trying until successful
+        QTimer.singleShot(1000, self.force_positioning)
 
 
 if __name__ == "__main__":
+    # Add these before creating QApplication
+    if "HYPRLAND_INSTANCE_SIGNATURE" not in os.environ:
+        os.environ.update(
+            subprocess.check_output("hyprctl env", shell=True, text=True).strip()
+        )
 
-    logging.basicConfig(level=logging.INFO)
     app = QApplication(sys.argv)
-
     window = TypingSpeedMonitor()
     window.show()
+    app.exec_()
+
+    logging.basicConfig(level=logging.INFO)
 
     hypr_rules = """\n
 windowrulev2 = float,title:Typeometer

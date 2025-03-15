@@ -1,0 +1,81 @@
+    # def position_window(self):
+    #     screen = QGuiApplication.primaryScreen().availableGeometry()
+    #     x = 0
+    #     y = screen.height() - self.height()
+    #
+    #     if QGuiApplication.platformName() == "wayland":
+    #         try:
+    #             import subprocess
+    #             subprocess.run([
+    #                 "hyprctl",
+    #                 "dispatch",
+    #                 "movewindowpixel",
+    #                 "0 100%-100",
+    #                 f"title:Typeometer"
+    #             ], check=True)
+    #         except Exception as e:
+    #             logging.error(f"Positioning failed: {e}")
+    #     else:
+    #         self.move(x, y)
+
+    # def position_window(self):
+    #     logging.info(f"Window handle valid: {self.windowHandle().isVisible()}")
+    #     logging.info(f"Window geometry: {self.geometry().getCoords()}")
+    #     screen = QGuiApplication.primaryScreen().availableGeometry()
+    #     position = settings["general"].get("window_position", "Bottom-Left")
+    #     print(f"winpos: {position}")
+    #     # Calculate coordinates for all positions
+    #     positions = {
+    #         "Top-Left": (0, 0, "0", "0"),
+    #         "Top-Right": (
+    #             screen.width() - self.width(),
+    #             0,
+    #             f"100%-{self.width()}",
+    #             "0"
+    #         ),
+    #         "Bottom-Left": (
+    #             0,
+    #             screen.height() - self.height(),
+    #             "0",
+    #             f"100%-{self.height()}"
+    #         ),
+    #         "Bottom-Right": (
+    #             screen.width() - self.width(),
+    #             screen.height() - self.height(),
+    #             f"100%-{self.width()}",
+    #             f"100%-{self.height()}"
+    #         )
+    #     }
+    #
+    #     x, y, hx, hy = positions.get(
+    #         position,
+    #         (0, screen.height() - self.height(), "0", f"100%-{self.height()}")
+    #     )
+    #
+    #     print(f"x: {x} y: {y} hx: {hx} hy: {hy} ")
+    #
+    #     if QGuiApplication.platformName() == "wayland":
+    #         try:
+    #             import subprocess
+    #             # First ensure window is floated
+    #             subprocess.run([
+    #                 "hyprctl",
+    #                 "dispatch",
+    #                 "togglefloating",
+    #                 "title:Typeometer"
+    #             ], check=True)
+    #
+    #             typometer_pid = os.getpid()
+    #
+    #             # Then move it
+    #             subprocess.run([
+    #                 "hyprctl",
+    #                 "dispatch",
+    #                 "movewindowpixel",
+    #                 f"{hx} {hy}",
+    #                 f"pid:{typometer_pid}"
+    #             ], check=True)
+    #         except Exception as e:
+    #             logging.error(f"Wayland positioning failed: {e}")
+    #     else:
+    #         self.move(x, y)
