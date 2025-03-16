@@ -7,10 +7,13 @@ import pystray
 import PIL.Image
 from logging import info as loginfo
 
+from PIL.ImageChops import screen
+
 global typometer
 window_name: str = "Typeometer"
+
 filejf = open(file="config/general.json", mode="r")
-settings:dict = load(filejf)
+settings: dict = load(filejf)
 filejf.close()
 
 
@@ -24,26 +27,16 @@ class Tray:
     def on_clicked(item):
         print(f"str_item: {str(item)}")
         print("Clicked Main!")
-        if str(item) == "reforce positioning hypr":
-            print("debug: force position")
-            typometer.ipc.position_window()
-        elif str(item) == "forc-move-pos-pixel-hypr":
-            print("debug: forc-move-pos-pixel-hypr")
-            typometer.ipc.send_command(f"dispatch movewindowpixel 1080 1080,title:^{window_name}$")
 
-    def force_move(self, icon, item):
-        print("force-mov")
-        self.TypoMeter.ipc.send_command(f"dispatch movewindowpixel 900 0,title:^{window_name}$")
+    def move_call_item(self):
+        screen_item = self.TypoMeter.screen().availableGeometry()
+        x_pos = screen_item.left()
+        y_pos = screen_item.top()
 
-    def pos_com_force(self):
-        print("self-force")
-
-        direction = settings["general"]["window_position"]
-        # payload_command = self.TypoMeter.get_hypr_command_from_list(com=direction)
-        print(f"payload command: {payload_command}")
-        payload_command = f"dispatch movewindowpixel 0 100%-100,title:^{window_name}$"
-
-        print(self.TypoMeter.ipc.send_command(command=payload_command))
+        self.TypoMeter.move(x_pos, y_pos)
+        self.TypoMeter.updateGeometry()
+        print("Attempted move call to corner via debug: completed")
+        print("Success not gua")
 
     def __init__(self, Typometer):
         self.TypoMeter = Typometer
@@ -57,8 +50,7 @@ class Tray:
             )),
             pystray.MenuItem("Exit", action=exit_func),
             pystray.MenuItem("Debug", pystray.Menu(
-                pystray.MenuItem("force set positioning", self.pos_com_force),
-                pystray.MenuItem("move-test", self.force_move)
+                pystray.MenuItem("Move window to corner via move call", self.move_call_item)
             ))
         ))
 

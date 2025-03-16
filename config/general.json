@@ -2,6 +2,7 @@
  "general": {
   "color_switcher": true,
   "input_device_path": "/dev/input/event3",
-  "window_position": "top-right"
+  "window_position": "top-right",
+  "no_hyprland_nag": "1"
  }
 }
