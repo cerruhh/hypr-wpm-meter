@@ -2,6 +2,6 @@
  "general": {
   "color_switcher": true,
   "input_device_path": "/dev/input/event3",
-  "window_position": "bottom-right"
+  "window_position": "top-right"
  }
 }

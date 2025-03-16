@@ -25,10 +25,11 @@ with open(file="config/general.json", mode="r") as jfile:
     settings = json_load(jfile)
 
 
-def get_hypr_command_from_list():
-    pass
-
 def get_color_from_wpm(wpm: int) -> str:
+    # Check if color switcher is disabled.
+    if not settings["general"]["color_switcher"]:
+        return "white"
+
     if wpm < 120:
         return "white"
     elif 120 < wpm < 300:
@@ -85,12 +86,12 @@ class HyprlandIPC:
             print(f"IPC Error: {e}")
             return None
 
-    def position_window(self, window_title, pos_name: str) -> bool:
+    def position_window(self, window_title, pos_command: str) -> bool:
+        print(pos_command)
         commands = [
             f"dispatch focuswindow title:^{window_title}$",
             f"dispatch togglefloating title:^{window_title}$",
-            f"dispatch movewindowpixel 0 100%-100,title:^{window_title}$",
-            f"dispatch resizeactive exact 400 100,title:^{window_title}$",
+            #pos_command,
             f"dispatch pin title:^{window_title}$",
             f"keyword windowrulevatime 0.1 float,title:^{window_title}$",
             f"keyword windowrulevatime 0.1 nofocus,title:^{window_title}$",
@@ -99,6 +100,7 @@ class HyprlandIPC:
 
         for cmd in commands:
             if not self.send_command(cmd):
+                print("x")
                 return False
         return True
 
@@ -108,6 +110,9 @@ class TypingSpeedMonitor(QMainWindow):
     key_released_signal = pyqtSignal(object)
 
     def __init__(self):
+        self.window_width = 400  # Explicit width definition
+        self.window_height = 100  # Explicit height definition
+
         super().__init__()
         self.setWindowTitle("Typeometer")
         self.ipc = HyprlandIPC()
@@ -131,6 +136,25 @@ class TypingSpeedMonitor(QMainWindow):
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
         QTimer.singleShot(500, self.force_positioning)
+
+    def get_hypr_command_from_list(self, com: str) -> str:
+        window_title = "Typeometer"
+        print(com)
+        if com.lower() == "bottom-right":
+            print("bottom_right")
+            return f"dispatch movewindowpixel 100%-{self.window_width + 10} 100%-{self.window_height + 10},title:^{window_title}$"
+        elif com.lower() == "top-left":
+            print("top_left")
+            return f"dispatch movewindowpixel 10 10,title:^{window_title}$"
+        elif com.lower() == "top-right":
+            print("top_right")
+            return f"dispatch movewindowpixel 100%-{self.window_width + 10} 10,title:^{window_title}$"
+        elif com.lower() == "bottom-left":
+            print("bottom_left")
+            return f"dispatch movewindowpixel 0 100%-100,title:^{window_title}$"
+        else:
+            print("dispatch error, def")
+            return f"dispatch movewindowpixel 0 100%-100,title:^{window_title}$"
 
     def init_ui(self):
         self.setWindowFlags(
@@ -325,7 +349,8 @@ class TypingSpeedMonitor(QMainWindow):
         self.retry_positioning()
 
     def retry_positioning(self):
-        if self.ipc.position_window("Typeometer"):
+        com = self.get_hypr_command_from_list(settings["general"]["window_position"])
+        if self.ipc.position_window("Typeometer", com):
             print("Window positioned successfully")
         elif self.ipc.retry_count < self.ipc.max_retries:
             print(f"Retrying positioning ({self.ipc.retry_count + 1}/{self.ipc.max_retries})")
@@ -335,7 +360,8 @@ class TypingSpeedMonitor(QMainWindow):
             print("Failed to position window after multiple attempts")
 
     def force_positioning(self):
-        if not self.ipc.position_window("Typeometer"):
+        com = self.get_hypr_command_from_list(settings["general"]["window_position"])
+        if not self.ipc.position_window("Typeometer", com):
             print("Positioning failed, trying alternative methods...")
             self.fallback_positioning()
 
